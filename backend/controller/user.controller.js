@@ -1,7 +1,7 @@
 import asyncHandler from "../utils/asyncHandler.js";
 import { v2 as cloudinary } from "cloudinary";
 import { User } from "../models/user.models.js";
-import emailVerificationModel from "../models/emailVerification.model.js";
+import EmailVerification from "../models/emailVerification.model.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
