@@ -1,8 +1,10 @@
+import mongoose from "mongoose";
 import asyncHandler from "../utils/asyncHandler.js";
 import ApiError from "../utils/ApiError.js";
 import ApiResponse from "../utils/ApiResponse.js";
 import { User } from "../models/user.models.js";
 import { Provider } from "../models/provider.model.js";
+import { Address } from "../models/address.model.js";
 
 
 // ============================================================
@@ -23,10 +25,6 @@ const becomeProvider = asyncHandler(async (req, res) => {
     serviceArea,
   } = req.body;
 
-  // ----------------------------------------------------------
-  // Basic validation
-  // ----------------------------------------------------------
-
   if (!businessName?.trim()) {
     throw new ApiError(400, "Business name is required");
   }
@@ -45,10 +43,6 @@ const becomeProvider = asyncHandler(async (req, res) => {
     );
   }
 
-  // ----------------------------------------------------------
-  // Find user
-  // ----------------------------------------------------------
-
   const user = await User.findById(userId);
 
   if (!user) {
@@ -62,10 +56,6 @@ const becomeProvider = asyncHandler(async (req, res) => {
   if (user.isSuspended) {
     throw new ApiError(403, "Your account is suspended");
   }
-
-  // ----------------------------------------------------------
-  // Role check
-  // ----------------------------------------------------------
 
   if (user.role === "admin") {
     throw new ApiError(
@@ -81,10 +71,6 @@ const becomeProvider = asyncHandler(async (req, res) => {
     );
   }
 
-  // ----------------------------------------------------------
-  // Check existing provider profile
-  // ----------------------------------------------------------
-
   const existingProvider = await Provider.findOne({
     user: userId,
   });
@@ -95,10 +81,6 @@ const becomeProvider = asyncHandler(async (req, res) => {
       "Provider profile already exists"
     );
   }
-
-  // ----------------------------------------------------------
-  // Validate service radius
-  // ----------------------------------------------------------
 
   const radius = Number(serviceRadiusKm);
 
@@ -115,10 +97,6 @@ const becomeProvider = asyncHandler(async (req, res) => {
       "Service radius must be between 1 and 200 km"
     );
   }
-
-  // ----------------------------------------------------------
-  // Validate service area
-  // ----------------------------------------------------------
 
   let validatedServiceArea = null;
 
@@ -173,10 +151,6 @@ const becomeProvider = asyncHandler(async (req, res) => {
     };
   }
 
-  // ----------------------------------------------------------
-  // Create provider
-  // ----------------------------------------------------------
-
   const provider = await Provider.create({
     user: userId,
     businessName: businessName.trim(),
@@ -187,15 +161,13 @@ const becomeProvider = asyncHandler(async (req, res) => {
     status: "active",
   });
 
-  return res
-    .status(201)
-    .json(
-      new ApiResponse(
-        201,
-        provider,
-        "Provider profile created successfully. Please complete verification."
-      )
-    );
+  return res.status(201).json(
+    new ApiResponse(
+      201,
+      provider,
+      "Provider profile created successfully. Please complete verification."
+    )
+  );
 });
 
 
@@ -251,10 +223,6 @@ const updateProviderProfile = asyncHandler(async (req, res) => {
     serviceRadiusKm,
   } = req.body;
 
-  // ----------------------------------------------------------
-  // Find provider owned by current user
-  // ----------------------------------------------------------
-
   const provider = await Provider.findOne({
     user: userId,
   });
@@ -266,20 +234,12 @@ const updateProviderProfile = asyncHandler(async (req, res) => {
     );
   }
 
-  // ----------------------------------------------------------
-  // Provider account status
-  // ----------------------------------------------------------
-
   if (provider.status === "suspended") {
     throw new ApiError(
       403,
       "Your provider account is suspended"
     );
   }
-
-  // ----------------------------------------------------------
-  // Update only allowed fields
-  // ----------------------------------------------------------
 
   if (businessName !== undefined) {
     if (typeof businessName !== "string") {
@@ -371,11 +331,10 @@ const updateServiceArea = asyncHandler(async (req, res) => {
     throw new ApiError(401, "Unauthorized request");
   }
 
-  const { coordinates, serviceRadiusKm } = req.body;
-
-  // ----------------------------------------------------------
-  // Find provider
-  // ----------------------------------------------------------
+  const {
+    coordinates,
+    serviceRadiusKm,
+  } = req.body;
 
   const provider = await Provider.findOne({
     user: userId,
@@ -394,10 +353,6 @@ const updateServiceArea = asyncHandler(async (req, res) => {
       "Your provider account is suspended"
     );
   }
-
-  // ----------------------------------------------------------
-  // Validate coordinates
-  // ----------------------------------------------------------
 
   if (
     !Array.isArray(coordinates) ||
@@ -433,10 +388,6 @@ const updateServiceArea = asyncHandler(async (req, res) => {
       "Coordinates are outside valid geographic range"
     );
   }
-
-  // ----------------------------------------------------------
-  // Update radius if provided
-  // ----------------------------------------------------------
 
   if (serviceRadiusKm !== undefined) {
     const radius = Number(serviceRadiusKm);
@@ -527,10 +478,6 @@ const updateAvailability = asyncHandler(async (req, res) => {
     "sunday",
   ];
 
-  // ----------------------------------------------------------
-  // Validate only known days
-  // ----------------------------------------------------------
-
   const providedDays = Object.keys(availability);
 
   for (const day of providedDays) {
@@ -541,10 +488,6 @@ const updateAvailability = asyncHandler(async (req, res) => {
       );
     }
   }
-
-  // ----------------------------------------------------------
-  // Validate each day
-  // ----------------------------------------------------------
 
   for (const day of providedDays) {
     const dayData = availability[day];
@@ -573,10 +516,6 @@ const updateAvailability = asyncHandler(async (req, res) => {
       );
     }
 
-    // --------------------------------------------------------
-    // If provider is unavailable, times are not required
-    // --------------------------------------------------------
-
     if (!isAvailable) {
       provider.availability[day] = {
         isAvailable: false,
@@ -586,10 +525,6 @@ const updateAvailability = asyncHandler(async (req, res) => {
 
       continue;
     }
-
-    // --------------------------------------------------------
-    // If available, start and end time are required
-    // --------------------------------------------------------
 
     if (!startTime || !endTime) {
       throw new ApiError(
@@ -664,10 +599,6 @@ const getProviderProfile = asyncHandler(async (req, res) => {
     );
   }
 
-  // ----------------------------------------------------------
-  // Validate ObjectId
-  // ----------------------------------------------------------
-
   if (!mongoose.isValidObjectId(providerId)) {
     throw new ApiError(
       400,
@@ -691,7 +622,6 @@ const getProviderProfile = asyncHandler(async (req, res) => {
     );
   }
 
- 
   const publicProvider = {
     _id: provider._id,
     businessName: provider.businessName,
@@ -728,52 +658,13 @@ const getProviderProfile = asyncHandler(async (req, res) => {
 
 const getNearbyProviders = asyncHandler(async (req, res) => {
   const {
+    addressId,
     longitude,
     latitude,
     radius = 10,
     page = 1,
     limit = 10,
   } = req.query;
-
-  // ----------------------------------------------------------
-  // Validate longitude
-  // ----------------------------------------------------------
-
-  const lng = Number(longitude);
-
-  if (!Number.isFinite(lng)) {
-    throw new ApiError(
-      400,
-      "Valid longitude is required"
-    );
-  }
-
-  if (lng < -180 || lng > 180) {
-    throw new ApiError(
-      400,
-      "Longitude must be between -180 and 180"
-    );
-  }
-
-  // ----------------------------------------------------------
-  // Validate latitude
-  // ----------------------------------------------------------
-
-  const lat = Number(latitude);
-
-  if (!Number.isFinite(lat)) {
-    throw new ApiError(
-      400,
-      "Valid latitude is required"
-    );
-  }
-
-  if (lat < -90 || lat > 90) {
-    throw new ApiError(
-      400,
-      "Latitude must be between -90 and 90"
-    );
-  }
 
   // ----------------------------------------------------------
   // Validate radius
@@ -826,14 +717,98 @@ const getNearbyProviders = asyncHandler(async (req, res) => {
   const skip = (currentPage - 1) * itemsPerPage;
 
   // ----------------------------------------------------------
-  // Convert KM → meters
-  // MongoDB $geoNear uses meters by default
+  // Resolve search coordinates
+  // ----------------------------------------------------------
+
+  let searchLongitude;
+  let searchLatitude;
+
+  if (addressId) {
+    if (!mongoose.isValidObjectId(addressId)) {
+      throw new ApiError(
+        400,
+        "Invalid address ID"
+      );
+    }
+
+    if (!req.user?._id) {
+      throw new ApiError(
+        401,
+        "Login is required when using addressId"
+      );
+    }
+
+    const address = await Address.findOne({
+      _id: addressId,
+      user: req.user._id,
+    }).lean();
+
+    if (!address) {
+      throw new ApiError(
+        404,
+        "Address not found"
+      );
+    }
+
+    if (
+      !address.coordinates ||
+      !Array.isArray(address.coordinates.coordinates) ||
+      address.coordinates.coordinates.length !== 2
+    ) {
+      throw new ApiError(
+        400,
+        "Address does not have valid coordinates"
+      );
+    }
+
+    [
+      searchLongitude,
+      searchLatitude,
+    ] = address.coordinates.coordinates;
+  } else {
+    const lng = Number(longitude);
+    const lat = Number(latitude);
+
+    if (!Number.isFinite(lng)) {
+      throw new ApiError(
+        400,
+        "Valid longitude is required"
+      );
+    }
+
+    if (lng < -180 || lng > 180) {
+      throw new ApiError(
+        400,
+        "Longitude must be between -180 and 180"
+      );
+    }
+
+    if (!Number.isFinite(lat)) {
+      throw new ApiError(
+        400,
+        "Valid latitude is required"
+      );
+    }
+
+    if (lat < -90 || lat > 90) {
+      throw new ApiError(
+        400,
+        "Latitude must be between -90 and 90"
+      );
+    }
+
+    searchLongitude = lng;
+    searchLatitude = lat;
+  }
+
+  // ----------------------------------------------------------
+  // Convert KM to meters
   // ----------------------------------------------------------
 
   const maxDistanceInMeters = radiusKm * 1000;
 
   // ----------------------------------------------------------
-  // Find nearby providers
+  // Nearby providers
   // ----------------------------------------------------------
 
   const providers = await Provider.aggregate([
@@ -841,8 +816,13 @@ const getNearbyProviders = asyncHandler(async (req, res) => {
       $geoNear: {
         near: {
           type: "Point",
-          coordinates: [lng, lat],
+          coordinates: [
+            searchLongitude,
+            searchLatitude,
+          ],
         },
+
+        key: "serviceArea",
 
         distanceField: "distanceInMeters",
 
@@ -853,12 +833,35 @@ const getNearbyProviders = asyncHandler(async (req, res) => {
         query: {
           status: "active",
           verificationStatus: "approved",
+          serviceArea: {
+            $ne: null,
+          },
         },
       },
     },
 
     // --------------------------------------------------------
-    // Convert distance into KM
+    // Provider's own service radius
+    // --------------------------------------------------------
+
+    {
+      $match: {
+        $expr: {
+          $lte: [
+            "$distanceInMeters",
+            {
+              $multiply: [
+                "$serviceRadiusKm",
+                1000,
+              ],
+            },
+          ],
+        },
+      },
+    },
+
+    // --------------------------------------------------------
+    // Distance in KM
     // --------------------------------------------------------
 
     {
@@ -878,11 +881,12 @@ const getNearbyProviders = asyncHandler(async (req, res) => {
     },
 
     // --------------------------------------------------------
-    // Public fields only
+    // Public fields
     // --------------------------------------------------------
 
     {
       $project: {
+        _id: 1,
         businessName: 1,
         description: 1,
         serviceArea: 1,
@@ -909,7 +913,7 @@ const getNearbyProviders = asyncHandler(async (req, res) => {
   ]);
 
   // ----------------------------------------------------------
-  // Get total nearby providers
+  // Count nearby providers
   // ----------------------------------------------------------
 
   const countResult = await Provider.aggregate([
@@ -917,8 +921,13 @@ const getNearbyProviders = asyncHandler(async (req, res) => {
       $geoNear: {
         near: {
           type: "Point",
-          coordinates: [lng, lat],
+          coordinates: [
+            searchLongitude,
+            searchLatitude,
+          ],
         },
+
+        key: "serviceArea",
 
         distanceField: "distanceInMeters",
 
@@ -929,6 +938,25 @@ const getNearbyProviders = asyncHandler(async (req, res) => {
         query: {
           status: "active",
           verificationStatus: "approved",
+          serviceArea: {
+            $ne: null,
+          },
+        },
+      },
+    },
+
+    {
+      $match: {
+        $expr: {
+          $lte: [
+            "$distanceInMeters",
+            {
+              $multiply: [
+                "$serviceRadiusKm",
+                1000,
+              ],
+            },
+          ],
         },
       },
     },
@@ -965,9 +993,12 @@ const getNearbyProviders = asyncHandler(async (req, res) => {
         },
 
         search: {
-          latitude: lat,
-          longitude: lng,
+          latitude: searchLatitude,
+          longitude: searchLongitude,
           radiusKm,
+          source: addressId
+            ? "saved_address"
+            : "coordinates",
         },
       },
       "Nearby providers fetched successfully"

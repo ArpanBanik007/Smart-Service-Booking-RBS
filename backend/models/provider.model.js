@@ -54,8 +54,8 @@ const serviceAreaSchema = new Schema(
     type: {
       type: String,
       enum: ["Point"],
-      default: "Point",
       required: true,
+      default: "Point",
     },
 
     coordinates: {
@@ -126,7 +126,6 @@ const availabilityDaySchema = new Schema(
 
 const providerSchema = new Schema(
   {
-    // One User can have only one Provider profile.
     user: {
       type: Schema.Types.ObjectId,
       ref: "User",
@@ -250,18 +249,15 @@ const providerSchema = new Schema(
   }
 );
 
-// Geospatial index
 providerSchema.index({
   serviceArea: "2dsphere",
 });
 
-// Useful admin/provider filtering
 providerSchema.index({
   verificationStatus: 1,
   status: 1,
 });
 
-// Rating based provider discovery
 providerSchema.index({
   rating: -1,
   totalReviews: -1,
