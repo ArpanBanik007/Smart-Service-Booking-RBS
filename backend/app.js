@@ -107,6 +107,13 @@ app.use(
 // Global Error Handling Middleware
 
 app.use((err, req, res, next) => {
+  console.error(">>> API Error caught in global middleware:", {
+    name: err.name,
+    message: err.message,
+    statusCode: err.statusCode,
+    stack: err.stack,
+  });
+
   const statusCode = err.statusCode || 500;
   const message =
     err.message || "Internal Server Error";

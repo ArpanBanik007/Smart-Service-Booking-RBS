@@ -17,6 +17,8 @@ export const ENDPOINTS = {
 
   // Provider routes (/api/v1/provider)
   PROVIDER: {
+    LIST: "/provider",
+    SEARCH: "/provider/search",
     BECOME: "/provider/become",
     ME: "/provider/me",
     UPDATE_PROFILE: "/provider/profile",
@@ -52,6 +54,7 @@ export const ENDPOINTS = {
   SERVICES: {
     LIST: "/services",
     SEARCH: "/services/search",
+    SUGGESTIONS: "/services/suggestions",
     BY_CATEGORY: (catId) => `/services/category/${catId}`,
     BY_PROVIDER: (providerId) => `/services/provider/${providerId}`,
     GET_BY_ID: (id) => `/services/${id}`,
@@ -86,6 +89,7 @@ export const ENDPOINTS = {
     PROVIDER_GET_BY_ID: (id) => `/bookings/provider/${id}`,
     ACCEPT: (id) => `/bookings/provider/${id}/accept`,
     REJECT: (id) => `/bookings/provider/${id}/reject`,
+    PROVIDER_CANCEL: (id) => `/bookings/provider/${id}/cancel`,
     ON_THE_WAY: (id) => `/bookings/provider/${id}/on-the-way`,
     START: (id) => `/bookings/provider/${id}/start`,
     COMPLETE: (id) => `/bookings/provider/${id}/complete`,
@@ -138,6 +142,7 @@ export const ENDPOINTS = {
     PROVIDER_BY_ID: (id) => `/admin/providers/${id}`,
     SUSPEND_PROVIDER: (id) => `/admin/providers/${id}/suspend`,
     ACTIVATE_PROVIDER: (id) => `/admin/providers/${id}/activate`,
+    APPROVE_PROVIDER: (id) => `/admin/providers/${id}/approve`,
     PENDING_VERIFICATIONS: "/admin/verifications/pending",
     APPROVE_VERIFICATION: (id) => `/admin/verifications/${id}/approve`,
     REJECT_VERIFICATION: (id) => `/admin/verifications/${id}/reject`,

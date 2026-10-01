@@ -433,6 +433,53 @@ const activateProvider = asyncHandler(async (req, res) => {
 });
 
 
+const approveProvider = asyncHandler(async (req, res) => {
+    const { providerId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(providerId)) {
+        throw new ApiError(400, "Invalid provider ID");
+    }
+
+    const provider = await Provider.findById(providerId);
+
+    if (!provider) {
+        throw new ApiError(404, "Provider not found");
+    }
+
+    provider.verificationStatus = "approved";
+    provider.status = "active";
+    await provider.save();
+
+    await User.findByIdAndUpdate(provider.user, {
+        $set: {
+            role: "provider",
+            isSuspended: false,
+            isActive: true,
+        },
+    });
+
+    await ProviderVerification.updateMany(
+        { provider: provider._id, status: "PENDING" },
+        {
+            $set: {
+                status: "APPROVED",
+                reviewedAt: new Date(),
+                reviewedBy: req.user._id,
+            },
+        }
+    );
+
+    return res.status(200).json(
+        new ApiResponse(
+            200,
+            provider,
+            "Provider approved and activated successfully"
+        )
+    );
+});
+
+
+
 const getPendingVerifications = asyncHandler(async (req, res) => {
     const { page, limit, skip } = getPagination(req);
 
@@ -1174,6 +1221,7 @@ export {
     getProviderById,
     suspendProvider,
     activateProvider,
+    approveProvider,
 
     getPendingVerifications,
     approveVerification,

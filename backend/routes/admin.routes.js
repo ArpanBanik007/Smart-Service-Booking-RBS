@@ -15,6 +15,7 @@ import {
     getProviderById,
     suspendProvider,
     activateProvider,
+    approveProvider,
 
     getPendingVerifications,
     approveVerification,
@@ -48,6 +49,7 @@ router.get("/providers", getAllProviders);
 router.get("/providers/:providerId", getProviderById);
 router.patch("/providers/:providerId/suspend", suspendProvider);
 router.patch("/providers/:providerId/activate", activateProvider);
+router.patch("/providers/:providerId/approve", approveProvider);
 
 router.get(
     "/verifications/pending",

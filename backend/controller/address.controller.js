@@ -73,44 +73,48 @@ const createAddress = asyncHandler(async (req, res) => {
   } = req.body;
 
 
+  const finalAddressLine = (addressLine || req.body.street || "").trim();
+  const finalCity = (city || "").trim();
+  const finalState = (state || "").trim();
+  const rawPincode = String(pincode || req.body.postalCode || "").trim();
+
   // ----------------------------------------------------------
   // Required fields
   // ----------------------------------------------------------
 
-  if (!addressLine || !addressLine.trim()) {
+  if (!finalAddressLine) {
     throw new ApiError(
       400,
       "Address line is required"
     );
   }
 
-  if (!city || !city.trim()) {
+  if (!finalCity) {
     throw new ApiError(
       400,
       "City is required"
     );
   }
 
-  if (!state || !state.trim()) {
+  if (!finalState) {
     throw new ApiError(
       400,
       "State is required"
     );
   }
 
-  if (!pincode || !String(pincode).trim()) {
+  if (!rawPincode) {
     throw new ApiError(
       400,
       "Pincode is required"
     );
   }
 
-
   // ----------------------------------------------------------
   // Label
   // ----------------------------------------------------------
 
-  const finalLabel = label || "other";
+  const finalLabel = (label || "home").toLowerCase();
 
   if (!allowedLabels.includes(finalLabel)) {
     throw new ApiError(
@@ -119,12 +123,11 @@ const createAddress = asyncHandler(async (req, res) => {
     );
   }
 
-
   // ----------------------------------------------------------
   // Pincode
   // ----------------------------------------------------------
 
-  const cleanPincode = String(pincode).trim();
+  const cleanPincode = rawPincode.replace(/\D/g, "");
 
   if (!/^\d{6}$/.test(cleanPincode)) {
     throw new ApiError(
@@ -133,19 +136,20 @@ const createAddress = asyncHandler(async (req, res) => {
     );
   }
 
-
   // ----------------------------------------------------------
   // Coordinates
   // ----------------------------------------------------------
 
-  if (!coordinates) {
-    throw new ApiError(
-      400,
-      "Coordinates are required"
-    );
+  let normalizedCoords = coordinates;
+  if (coordinates && typeof coordinates === "object" && !Array.isArray(coordinates)) {
+    if (Number.isFinite(coordinates.longitude) && Number.isFinite(coordinates.latitude)) {
+      normalizedCoords = [coordinates.longitude, coordinates.latitude];
+    }
+  } else if (!coordinates) {
+    normalizedCoords = [88.3639, 22.5726];
   }
 
-  validateCoordinates(coordinates);
+  validateCoordinates(normalizedCoords);
 
 
   // ----------------------------------------------------------
@@ -180,17 +184,17 @@ const createAddress = asyncHandler(async (req, res) => {
 
     label: finalLabel,
 
-    addressLine: addressLine.trim(),
+    addressLine: finalAddressLine,
 
-    city: city.trim(),
+    city: finalCity,
 
-    state: state.trim(),
+    state: finalState,
 
     pincode: cleanPincode,
 
     coordinates: {
       type: "Point",
-      coordinates,
+      coordinates: normalizedCoords,
     },
 
     landmark: landmark?.trim() || "",

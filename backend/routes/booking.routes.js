@@ -13,6 +13,7 @@ import {
   getProviderBookingById,
   acceptBooking,
   rejectBooking,
+  providerCancelBooking,
 
   markOnTheWay,
   startService,
@@ -57,6 +58,13 @@ router.patch(
 );
 
 router.patch(
+  "/provider/:bookingId/cancel",
+  verifyJWT,
+  authorizeRole("provider"),
+  providerCancelBooking
+);
+
+router.patch(
   "/provider/:bookingId/on-the-way",
   verifyJWT,
   authorizeRole("provider"),
@@ -85,14 +93,14 @@ router.patch(
 router.post(
   "/",
   verifyJWT,
-  authorizeRole("user"),
+  authorizeRole("user", "provider", "admin"),
   createBooking
 );
 
 router.get(
   "/",
   verifyJWT,
-  authorizeRole("user"),
+  authorizeRole("user", "provider", "admin"),
   getMyBookings
 );
 
@@ -110,14 +118,14 @@ router.get(
 router.get(
   "/:bookingId",
   verifyJWT,
-  authorizeRole("user"),
+  authorizeRole("user", "provider", "admin"),
   getMyBookingById
 );
 
 router.patch(
   "/:bookingId/cancel",
   verifyJWT,
-  authorizeRole("user"),
+  authorizeRole("user", "provider", "admin"),
   cancelBooking
 );
 

@@ -5,6 +5,9 @@ import ApiResponse from "../utils/ApiResponse.js";
 import { User } from "../models/user.models.js";
 import { Provider } from "../models/provider.model.js";
 import { Address } from "../models/address.model.js";
+import { Service } from "../models/service.model.js";
+import { Category } from "../models/category.model.js";
+import { extractSearchTokens, escapeRegex } from "../utils/searchHelper.js";
 
 
 // ============================================================
@@ -1007,6 +1010,182 @@ const getNearbyProviders = asyncHandler(async (req, res) => {
 });
 
 
+// ============================================================
+// 8. GET ALL / SEARCH PROVIDERS (Marketplace Discovery)
+// ============================================================
+
+const getProviders = asyncHandler(async (req, res) => {
+  const {
+    search,
+    q,
+    category,
+    minRating,
+    availability,
+    page: pageQuery = 1,
+    limit: limitQuery = 12,
+    sort = "rating",
+  } = req.query;
+
+  const searchQuery = (search || q || "").trim();
+  const page = Math.max(parseInt(pageQuery, 10) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(limitQuery, 10) || 12, 1), 50);
+  const skip = (page - 1) * limit;
+
+  const filter = {
+    status: "active",
+    verificationStatus: "approved",
+  };
+
+  if (minRating !== undefined && minRating !== "") {
+    filter.rating = { $gte: Number(minRating) };
+  }
+
+  if (searchQuery) {
+    const { expandedTerms } = extractSearchTokens(searchQuery);
+    const regexPattern =
+      expandedTerms.length > 0
+        ? expandedTerms.map((t) => escapeRegex(t)).join("|")
+        : escapeRegex(searchQuery);
+    const searchRegex = new RegExp(regexPattern, "i");
+
+    // Also find services matching the search terms to include their providers
+    const matchingServices = await Service.find({
+      isActive: true,
+      $or: [
+        { title: searchRegex },
+        { description: searchRegex },
+      ],
+    })
+      .select("provider")
+      .lean();
+
+    const serviceProviderIds = matchingServices.map((s) => s.provider);
+
+    filter.$or = [
+      { businessName: searchRegex },
+      { description: searchRegex },
+      { _id: { $in: serviceProviderIds } },
+    ];
+  }
+
+  if (category && category !== "All" && category !== "all") {
+    let catFilter = {};
+    if (mongoose.Types.ObjectId.isValid(category)) {
+      catFilter._id = category;
+    } else {
+      catFilter.$or = [
+        { slug: category.toLowerCase() },
+        { name: new RegExp(escapeRegex(category), "i") },
+      ];
+    }
+    const foundCategory = await Category.findOne(catFilter);
+    if (foundCategory) {
+      const servicesInCat = await Service.find({
+        category: foundCategory._id,
+        isActive: true,
+      })
+        .select("provider")
+        .lean();
+
+      const catProviderIds = servicesInCat.map((s) => s.provider);
+      if (filter._id) {
+        filter._id = {
+          $in: catProviderIds.filter((id) =>
+            filter._id.$in?.some((x) => x.equals(id))
+          ),
+        };
+      } else {
+        filter._id = { $in: catProviderIds };
+      }
+    }
+  }
+
+  // Sorting
+  let sortStage = { rating: -1, completedBookings: -1 };
+  if (sort === "reviews") sortStage = { totalReviews: -1 };
+  if (sort === "name") sortStage = { businessName: 1 };
+  if (sort === "newest") sortStage = { createdAt: -1 };
+
+  const [rawProviders, total] = await Promise.all([
+    Provider.find(filter)
+      .populate("user", "fullName avatar phone email")
+      .sort(sortStage)
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Provider.countDocuments(filter),
+  ]);
+
+  // Attach services, starting price, and live availability
+  const days = [
+    "sunday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+  ];
+  const now = new Date();
+  const currentDay = days[now.getDay()];
+
+  let providers = await Promise.all(
+    rawProviders.map(async (provider) => {
+      const services = await Service.find({
+        provider: provider._id,
+        isActive: true,
+      })
+        .populate("category", "name icon slug")
+        .select("title price duration category images description")
+        .limit(6)
+        .lean();
+
+      let startingPrice = 0;
+      if (services.length > 0) {
+        startingPrice = Math.min(...services.map((s) => s.price));
+      }
+
+      const todaySchedule = provider.availability?.[currentDay];
+      const isAvailableToday = Boolean(todaySchedule?.isAvailable);
+      const operatingHours = isAvailableToday
+        ? `${todaySchedule.startTime || "09:00"} - ${todaySchedule.endTime || "20:00"}`
+        : "Closed Today";
+
+      return {
+        ...provider,
+        services,
+        startingPrice,
+        isAvailableToday,
+        operatingHours,
+      };
+    })
+  );
+
+  // If availability filter is applied ("today" or "true")
+  if (availability === "today" || availability === "true") {
+    providers = providers.filter((p) => p.isAvailableToday);
+  }
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        providers,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+          hasNextPage: page < Math.ceil(total / limit),
+          hasPreviousPage: page > 1,
+        },
+      },
+      "Providers fetched successfully"
+    )
+  );
+});
+
+
 export {
   becomeProvider,
   getMyProviderProfile,
@@ -1015,4 +1194,5 @@ export {
   updateAvailability,
   getProviderProfile,
   getNearbyProviders,
-};
+  getProviders,
+};

@@ -7,6 +7,8 @@ import ApiResponse from "../utils/ApiResponse.js";
 import { Service } from "../models/service.model.js";
 import { Provider } from "../models/provider.model.js";
 import { Category } from "../models/category.model.js";
+import { extractSearchTokens, escapeRegex } from "../utils/searchHelper.js";
+
 
 
 // ============================================================
@@ -21,10 +23,6 @@ const validateObjectId = (id, fieldName = "ID") => {
 };
 
 
-// Escape regex special characters
-const escapeRegex = (value) => {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-};
 
 
 // Validate price
@@ -1494,122 +1492,69 @@ const searchServices = asyncHandler(async (req, res) => {
     minDuration,
     maxDuration,
     minRating,
+    sort,
     page: pageQuery,
     limit: limitQuery,
   } = req.query;
 
-
-  if (!q || !q.trim()) {
-    throw new ApiError(
-      400,
-      "Search query is required"
-    );
-  }
-
-
-  const searchTerm =
-    escapeRegex(q.trim());
-
-
-  if (searchTerm.length > 100) {
-    throw new ApiError(
-      400,
-      "Search query is too long"
-    );
-  }
-
-
-  const page = Math.max(
-    parseInt(pageQuery, 10) || 1,
-    1
-  );
-
-  const limit = Math.min(
-    Math.max(
-      parseInt(limitQuery, 10) || 10,
-      1
-    ),
-    50
-  );
-
+  const rawQuery = (q || "").trim();
+  const page = Math.max(parseInt(pageQuery, 10) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(limitQuery, 10) || 12, 1), 50);
   const skip = (page - 1) * limit;
-
-
-  if (category) {
-    validateObjectId(
-      category,
-      "category ID"
-    );
-  }
-
 
   const matchStage = {
     isActive: true,
-
-    $or: [
-      {
-        title: {
-          $regex: searchTerm,
-          $options: "i",
-        },
-      },
-      {
-        description: {
-          $regex: searchTerm,
-          $options: "i",
-        },
-      },
-    ],
   };
 
-
-  if (category) {
-    matchStage.category =
-      new mongoose.Types.ObjectId(category);
+  if (minPrice !== undefined && minPrice !== "") {
+    matchStage.price = { ...(matchStage.price || {}), $gte: Number(minPrice) };
+  }
+  if (maxPrice !== undefined && maxPrice !== "") {
+    matchStage.price = { ...(matchStage.price || {}), $lte: Number(maxPrice) };
+  }
+  if (minDuration !== undefined && minDuration !== "") {
+    matchStage.duration = {
+      ...(matchStage.duration || {}),
+      $gte: Number(minDuration),
+    };
+  }
+  if (maxDuration !== undefined && maxDuration !== "") {
+    matchStage.duration = {
+      ...(matchStage.duration || {}),
+      $lte: Number(maxDuration),
+    };
   }
 
-
-  if (
-    minPrice !== undefined ||
-    maxPrice !== undefined
-  ) {
-    matchStage.price = {};
-
-    if (minPrice !== undefined) {
-      matchStage.price.$gte =
-        Number(minPrice);
-    }
-
-    if (maxPrice !== undefined) {
-      matchStage.price.$lte =
-        Number(maxPrice);
-    }
-  }
-
-
-  if (
-    minDuration !== undefined ||
-    maxDuration !== undefined
-  ) {
-    matchStage.duration = {};
-
-    if (minDuration !== undefined) {
-      matchStage.duration.$gte =
-        Number(minDuration);
-    }
-
-    if (maxDuration !== undefined) {
-      matchStage.duration.$lte =
-        Number(maxDuration);
+  // Category filter by ObjectId or slug/name
+  if (category && category !== "All" && category !== "all") {
+    if (mongoose.Types.ObjectId.isValid(category)) {
+      matchStage.category = new mongoose.Types.ObjectId(category);
+    } else {
+      const catDoc = await Category.findOne({
+        $or: [
+          { slug: category.toLowerCase() },
+          { name: new RegExp(escapeRegex(category), "i") },
+        ],
+      });
+      if (catDoc) {
+        matchStage.category = catDoc._id;
+      }
     }
   }
 
+  // Intelligent search matching:
+  let searchRegex = null;
+  if (rawQuery) {
+    const { expandedTerms } = extractSearchTokens(rawQuery);
+    const regexPattern =
+      expandedTerms.length > 0
+        ? expandedTerms.map((t) => escapeRegex(t)).join("|")
+        : escapeRegex(rawQuery);
+    searchRegex = new RegExp(regexPattern, "i");
+  }
 
   const pipeline = [
-    {
-      $match: matchStage,
-    },
-
+    { $match: matchStage },
     {
       $lookup: {
         from: "providers",
@@ -1618,26 +1563,16 @@ const searchServices = asyncHandler(async (req, res) => {
         as: "providerData",
       },
     },
-
-    {
-      $unwind: "$providerData",
-    },
-
+    { $unwind: "$providerData" },
     {
       $match: {
         "providerData.status": "active",
-        "providerData.verificationStatus":
-          "approved",
-        ...(minRating !== undefined
-          ? {
-              "providerData.rating": {
-                $gte: Number(minRating),
-              },
-            }
+        "providerData.verificationStatus": "approved",
+        ...(minRating !== undefined && minRating !== ""
+          ? { "providerData.rating": { $gte: Number(minRating) } }
           : {}),
       },
     },
-
     {
       $lookup: {
         from: "categories",
@@ -1646,80 +1581,76 @@ const searchServices = asyncHandler(async (req, res) => {
         as: "categoryData",
       },
     },
-
-    {
-      $unwind: "$categoryData",
-    },
-
+    { $unwind: "$categoryData" },
     {
       $match: {
         "categoryData.isActive": true,
       },
     },
-
-    {
-      $sort: {
-        createdAt: -1,
-      },
-    },
-
-    {
-      $facet: {
-        services: [
-          {
-            $skip: skip,
-          },
-          {
-            $limit: limit,
-          },
-          {
-            $project: {
-              _id: 1,
-              title: 1,
-              description: 1,
-              price: 1,
-              duration: 1,
-              images: 1,
-              serviceArea: 1,
-              provider: {
-                _id: "$providerData._id",
-                businessName:
-                  "$providerData.businessName",
-                rating:
-                  "$providerData.rating",
-                totalReviews:
-                  "$providerData.totalReviews",
-              },
-              category: {
-                _id: "$categoryData._id",
-                name: "$categoryData.name",
-                slug: "$categoryData.slug",
-                icon: "$categoryData.icon",
-              },
-            },
-          },
-        ],
-
-        total: [
-          {
-            $count: "count",
-          },
-        ],
-      },
-    },
   ];
 
+  if (searchRegex) {
+    pipeline.push({
+      $match: {
+        $or: [
+          { title: searchRegex },
+          { description: searchRegex },
+          { "categoryData.name": searchRegex },
+          { "categoryData.description": searchRegex },
+          { "providerData.businessName": searchRegex },
+          { "providerData.description": searchRegex },
+        ],
+      },
+    });
+  }
 
-  const result =
-    await Service.aggregate(pipeline);
+  // Sorting
+  let sortField = { createdAt: -1 };
+  if (sort === "price_asc") sortField = { price: 1 };
+  else if (sort === "price_desc") sortField = { price: -1 };
+  else if (sort === "rating") sortField = { "providerData.rating": -1 };
+  else if (sort === "duration") sortField = { duration: 1 };
 
+  pipeline.push({ $sort: sortField });
 
-  const services =
-    result[0]?.services || [];
+  pipeline.push({
+    $facet: {
+      services: [
+        { $skip: skip },
+        { $limit: limit },
+        {
+          $project: {
+            _id: 1,
+            title: 1,
+            description: 1,
+            price: 1,
+            duration: 1,
+            images: 1,
+            serviceArea: 1,
+            provider: {
+              _id: "$providerData._id",
+              businessName: "$providerData.businessName",
+              rating: "$providerData.rating",
+              totalReviews: "$providerData.totalReviews",
+              serviceRadiusKm: "$providerData.serviceRadiusKm",
+              availability: "$providerData.availability",
+            },
+            category: {
+              _id: "$categoryData._id",
+              name: "$categoryData.name",
+              slug: "$categoryData.slug",
+              icon: "$categoryData.icon",
+            },
+          },
+        },
+      ],
+      total: [{ $count: "count" }],
+    },
+  });
 
-  const total =
-    result[0]?.total?.[0]?.count || 0;
-
+  const result = await Service.aggregate(pipeline);
+  const services = result[0]?.services || [];
+  const total = result[0]?.total?.[0]?.count || 0;
 
   return res.status(200).json(
     new ApiResponse(
@@ -1730,17 +1661,69 @@ const searchServices = asyncHandler(async (req, res) => {
           page,
           limit,
           total,
-          totalPages: Math.ceil(
-            total / limit
-          ),
-          hasNextPage:
-            page <
-            Math.ceil(total / limit),
-          hasPreviousPage:
-            page > 1,
+          totalPages: Math.ceil(total / limit),
+          hasNextPage: page < Math.ceil(total / limit),
+          hasPreviousPage: page > 1,
         },
       },
       "Search results fetched successfully"
+    )
+  );
+});
+
+
+// 12. Search Suggestions (Fast autocomplete for search bars)
+//
+// Example:
+// /api/v1/services/suggestions?q=ac
+// ============================================================
+
+const getSearchSuggestions = asyncHandler(async (req, res) => {
+  const { q = "" } = req.query;
+  const raw = q.trim();
+
+  let serviceQuery = { isActive: true };
+  let providerQuery = { status: "active", verificationStatus: "approved" };
+
+  if (raw) {
+    const { expandedTerms } = extractSearchTokens(raw);
+    const regexPattern =
+      expandedTerms.length > 0
+        ? expandedTerms.map((t) => escapeRegex(t)).join("|")
+        : escapeRegex(raw);
+    const searchRegex = new RegExp(regexPattern, "i");
+
+    serviceQuery.$or = [
+      { title: searchRegex },
+      { description: searchRegex },
+    ];
+
+    providerQuery.$or = [
+      { businessName: searchRegex },
+      { description: searchRegex },
+    ];
+  }
+
+  const [services, providers] = await Promise.all([
+    Service.find(serviceQuery)
+      .populate("category", "name icon slug")
+      .populate("provider", "businessName rating")
+      .limit(6)
+      .select("title price duration category provider images")
+      .lean(),
+    Provider.find(providerQuery)
+      .limit(4)
+      .select(
+        "businessName rating totalReviews serviceRadiusKm serviceArea availability"
+      )
+      .lean(),
+  ]);
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      { services, providers },
+      "Suggestions fetched successfully"
     )
   );
 });
@@ -1764,4 +1747,5 @@ export {
   getServicesByProvider,
 
   searchServices,
+  getSearchSuggestions,
 };

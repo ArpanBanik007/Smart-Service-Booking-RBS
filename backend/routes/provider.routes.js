@@ -10,6 +10,7 @@ import {
   updateAvailability,
   getProviderProfile,
   getNearbyProviders,
+  getProviders,
 } from "../controller/provider.controller.js";
 
 const router = Router();
@@ -81,8 +82,23 @@ router.get(
 
 
 // ============================================================
+// ALL / SEARCH PROVIDERS (Marketplace Discovery)
+// ============================================================
+
+router.get(
+  "/",
+  getProviders
+);
+
+router.get(
+  "/search",
+  getProviders
+);
+
+
+// ============================================================
 // PUBLIC PROVIDER PROFILE
-// IMPORTANT: Keep this AFTER /nearby
+// IMPORTANT: Keep this AFTER /nearby and /search
 // ============================================================
 
 router.get(

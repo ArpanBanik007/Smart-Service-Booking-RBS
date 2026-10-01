@@ -63,7 +63,10 @@ export default function AppRoutes() {
       ======================================================== */}
       <Route path="/" element={<HomePage />} />
       <Route path="/providers" element={<ProvidersExplorePage />} />
+      <Route path="/page" element={<ProvidersExplorePage />} />
+      <Route path="/search" element={<ProvidersExplorePage />} />
       <Route path="/providers/:id" element={<ProviderDetailsPage />} />
+      <Route path="/provider/:id" element={<ProviderDetailsPage />} />
       <Route path="/unauthorized" element={<UnauthorizedPage />} />
 
       {/* ========================================================

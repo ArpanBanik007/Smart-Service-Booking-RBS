@@ -3,7 +3,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useDispatch, useSelector } from "react-redux";
 import {
   FiHome,
-  FiSearch,
   FiMapPin,
   FiCalendar,
   FiBell,
@@ -16,6 +15,7 @@ import {
   FiGrid,
 } from "react-icons/fi";
 import { logoutUser } from "../../store/slices/authSlice.js";
+import SearchBar from "../search/SearchBar.jsx";
 
 const BRAND_NAME = "Near It...";
 const BRAND_TAGLINE = "Service, by your side";
@@ -67,20 +67,6 @@ function Avatar({ user, size = "h-9 w-9" }) {
   );
 }
 
-function SearchBox({ placeholder, value, onChange, onSubmit }) {
-  return (
-    <form onSubmit={onSubmit} className="relative w-full">
-      <FiSearch className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-      <input
-        type="text"
-        value={value}
-        onChange={onChange}
-        placeholder={placeholder}
-        className="w-full rounded-full border border-slate-200 bg-slate-50 py-2 pl-10 pr-4 text-sm text-slate-800 placeholder-slate-400 outline-none transition focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100"
-      />
-    </form>
-  );
-}
 
 function ProfileMenu({ user, onNavigate, onLogout, className = "" }) {
   const items = [
@@ -147,7 +133,6 @@ function ProfileMenu({ user, onNavigate, onLogout, className = "" }) {
 
 function Navbar() {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
-  const [searchText, setSearchText] = useState("");
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -163,13 +148,6 @@ function Navbar() {
   const handleNav = (path) => {
     setShowProfileMenu(false);
     navigate(path);
-  };
-
-  const handleSearch = (e) => {
-    e.preventDefault();
-    const q = searchText.trim();
-    if (!q) return;
-    navigate(`/providers?search=${encodeURIComponent(q)}`);
   };
 
   const handleLogout = async () => {
@@ -208,11 +186,9 @@ function Navbar() {
 
         {/* Search */}
         <div className="max-w-md flex-1">
-          <SearchBox
-            placeholder="Search plumber, electrician, cleaning..."
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            onSubmit={handleSearch}
+          <SearchBar
+            placeholder="Search AC mechanic, PC repair, electrician..."
+            initialValue={new URLSearchParams(location.search).get("search") || ""}
           />
         </div>
 
@@ -342,11 +318,9 @@ function Navbar() {
         </div>
 
         <div className="px-4 pb-2.5">
-          <SearchBox
-            placeholder="Search services..."
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            onSubmit={handleSearch}
+          <SearchBar
+            placeholder="Search services & providers..."
+            initialValue={new URLSearchParams(location.search).get("search") || ""}
           />
         </div>
       </div>

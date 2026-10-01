@@ -15,6 +15,7 @@ import {
   getServicesByCategory,
   getServicesByProvider,
   searchServices,
+  getSearchSuggestions,
 } from "../controller/service.controller.js";
 
 const router = Router();
@@ -79,6 +80,11 @@ router.get(
 router.get(
   "/search",
   searchServices
+);
+
+router.get(
+  "/suggestions",
+  getSearchSuggestions
 );
 
 router.get(

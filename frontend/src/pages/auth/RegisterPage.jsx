@@ -286,10 +286,31 @@ export default function RegisterPage() {
         setSuccess("Account created successfully! Welcome aboard.");
         setTimeout(() => navigate("/", { replace: true }), 1200);
       } else {
-        setError(
+        const errorMsg =
           resultAction.payload ||
-            "Failed to complete registration. Please verify all fields."
-        );
+          "Failed to complete registration. Please verify all fields.";
+        setError(errorMsg);
+
+        // Highlight the specific conflicting field if returned by backend
+        if (typeof errorMsg === "string") {
+          const lower = errorMsg.toLowerCase();
+          if (lower.includes("username")) {
+            detailsForm.setError("username", {
+              type: "server",
+              message: errorMsg,
+            });
+          } else if (lower.includes("phone")) {
+            detailsForm.setError("phone", {
+              type: "server",
+              message: errorMsg,
+            });
+          } else if (lower.includes("email")) {
+            detailsForm.setError("email", {
+              type: "server",
+              message: errorMsg,
+            });
+          }
+        }
       }
     } catch (err) {
       setError(
@@ -301,7 +322,7 @@ export default function RegisterPage() {
 
   const onInvalid = (validationErrors) => {
     console.warn("Validation errors in registration form:", validationErrors);
-    setError("Please fix the highlighted fields before submitting.");
+    setError("Please fix the highlighted fields above before submitting.");
   };
 
   const subtitles = {
@@ -467,6 +488,20 @@ export default function RegisterPage() {
             error={detailsForm.formState.errors.confirmPassword?.message}
             {...detailsForm.register("confirmPassword")}
           />
+
+          {error && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3.5 text-xs text-rose-700 shadow-xs">
+              <p className="font-semibold">{error}</p>
+              {error.toLowerCase().includes("already exists") && (
+                <Link
+                  to="/login"
+                  className="mt-2 inline-flex items-center gap-1 font-bold text-indigo-700 underline hover:text-indigo-900"
+                >
+                  Click here to Log In instead &rarr;
+                </Link>
+              )}
+            </div>
+          )}
 
           <button
             type="submit"

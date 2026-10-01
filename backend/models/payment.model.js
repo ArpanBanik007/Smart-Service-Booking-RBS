@@ -31,7 +31,6 @@ const paymentSchema = new Schema(
       type: String,
       required: true,
       unique: true,
-      immutable: true,
       trim: true,
       maxlength: [100, "Razorpay order ID is too long"],
       index: true,

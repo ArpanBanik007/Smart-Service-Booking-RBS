@@ -4,6 +4,9 @@ import mongoose from "mongoose";
 import { Payment } from "../models/payment.model.js";
 import { Booking } from "../models/booking.model.js";
 import { Transaction } from "../models/transaction.model.js";
+import { Provider } from "../models/provider.model.js";
+import { Notification } from "../models/notification.model.js";
+import { emitToUser } from "../socket.js";
 
 import asyncHandler from "../utils/asyncHandler.js";
 import ApiError from "../utils/ApiError.js";
@@ -42,21 +45,17 @@ const createPaymentOrder = asyncHandler(async (req, res) => {
         );
     }
 
-    if (
-        booking.bookingStatus === "CANCELLED"
-    ) {
+    if (booking.bookingStatus === "PENDING") {
         throw new ApiError(
             400,
-            "Cancelled booking cannot be paid"
+            "Please wait for the service provider to accept your booking request before making payment."
         );
     }
 
-    if (
-        booking.bookingStatus === "REJECTED"
-    ) {
+    if (booking.bookingStatus !== "ACCEPTED") {
         throw new ApiError(
             400,
-            "Rejected booking cannot be paid"
+            `Payment is only allowed for accepted bookings. Current status: ${booking.bookingStatus}`
         );
     }
 
@@ -135,8 +134,9 @@ const createPaymentOrder = asyncHandler(async (req, res) => {
         );
     }
 
-    const order =
-        await razorpay.orders.create({
+    let order;
+    try {
+        order = await razorpay.orders.create({
             amount: amountInPaise,
             currency: "INR",
             receipt:
@@ -149,49 +149,48 @@ const createPaymentOrder = asyncHandler(async (req, res) => {
                     userId.toString(),
             },
         });
+    } catch (razorpayErr) {
+        console.error("Razorpay order creation failed:", razorpayErr?.error || razorpayErr?.message || razorpayErr);
+        throw new ApiError(
+            502,
+            `Payment gateway error: ${razorpayErr?.error?.description || razorpayErr?.message || "Unable to create payment order. Please try again."}`
+        );
+    }
 
     if (!order?.id) {
         throw new ApiError(
             502,
-            "Unable to create Razorpay order"
+            "Unable to create Razorpay order — no order ID returned"
         );
     }
 
-    if (payment) {
-        payment.razorpayOrderId = order.id;
-        payment.amount = amount;
-        payment.currency = "INR";
-        payment.status = "PENDING";
-        payment.razorpayPaymentId =
-            undefined;
-        payment.razorpaySignature =
-            undefined;
-        payment.method = undefined;
-        payment.paidAt = undefined;
-        payment.failureReason =
-            undefined;
-
-        await payment.save();
-    } else {
-        payment = await Payment.create({
-            booking: booking._id,
-            user: userId,
-            provider: booking.provider,
-            razorpayOrderId: order.id,
-            amount,
-            currency: "INR",
-            status: "PENDING",
-        });
-    }
+    const updatedPayment = await Payment.findOneAndUpdate(
+        { booking: booking._id },
+        {
+            $set: {
+                user: userId,
+                provider: booking.provider,
+                razorpayOrderId: order.id,
+                amount,
+                currency: "INR",
+                status: "PENDING",
+                razorpayPaymentId: null,
+                razorpaySignature: null,
+                paidAt: null,
+                failureReason: "",
+            },
+        },
+        { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
 
     return res.status(201).json(
         new ApiResponse(
             201,
             {
-                paymentId: payment._id,
+                paymentId: updatedPayment._id,
                 razorpayOrderId: order.id,
                 amount: order.amount,
-                currency: order.currency,
+                currency: order.currency || "INR",
                 key:
                     process.env
                         .RAZORPAY_KEY_ID,
@@ -501,6 +500,72 @@ const verifyPayment = asyncHandler(async (req, res) => {
         }
 
         await session.commitTransaction();
+
+        // Notify customer and provider of successful payment
+        try {
+            const providerRecord = await Provider.findById(payment.provider);
+            const providerUserId = providerRecord?.user;
+
+            await Notification.create({
+                recipient: userId,
+                type: "PAYMENT_SUCCESS",
+                title: "Payment Confirmed!",
+                message: `Your payment of ₹${payment.amount} for booking #${booking.bookingNumber} was successful. Service is confirmed.`,
+                data: {
+                    bookingId: booking._id,
+                    bookingNumber: booking.bookingNumber,
+                    paymentId: updatedPayment._id,
+                },
+            });
+
+            emitToUser(userId, "notification", {
+                type: "PAYMENT_SUCCESS",
+                title: "Payment Confirmed!",
+                message: `Your payment of ₹${payment.amount} for booking #${booking.bookingNumber} was successful.`,
+                data: {
+                    bookingId: booking._id,
+                    bookingNumber: booking.bookingNumber,
+                },
+            });
+
+            emitToUser(userId, "booking_update", {
+                bookingId: booking._id,
+                paymentStatus: "PAID",
+                status: booking.bookingStatus,
+            });
+
+            if (providerUserId) {
+                await Notification.create({
+                    recipient: providerUserId,
+                    type: "PAYMENT_SUCCESS",
+                    title: "Customer Completed Payment",
+                    message: `Customer completed payment of ₹${payment.amount} for booking #${booking.bookingNumber}.`,
+                    data: {
+                        bookingId: booking._id,
+                        bookingNumber: booking.bookingNumber,
+                        paymentId: updatedPayment._id,
+                    },
+                });
+
+                emitToUser(providerUserId, "notification", {
+                    type: "PAYMENT_SUCCESS",
+                    title: "Customer Completed Payment",
+                    message: `Customer completed payment of ₹${payment.amount} for booking #${booking.bookingNumber}.`,
+                    data: {
+                        bookingId: booking._id,
+                        bookingNumber: booking.bookingNumber,
+                    },
+                });
+
+                emitToUser(providerUserId, "booking_update", {
+                    bookingId: booking._id,
+                    paymentStatus: "PAID",
+                    status: booking.bookingStatus,
+                });
+            }
+        } catch (notifErr) {
+            console.error("Failed to send payment notifications:", notifErr);
+        }
 
         return res.status(200).json(
             new ApiResponse(

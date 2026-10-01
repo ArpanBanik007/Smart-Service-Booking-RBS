@@ -9,6 +9,12 @@ import { BookingStatusHistory } from "../models/bookingStatusHistory.model.js";
 import { Service } from "../models/service.model.js";
 import { Provider } from "../models/provider.model.js";
 import { Address } from "../models/address.model.js";
+import { Notification } from "../models/notification.model.js";
+import { Payment } from "../models/payment.model.js";
+import { Refund } from "../models/refund.model.js";
+import { Transaction } from "../models/transaction.model.js";
+import getRazorpay from "../utils/razorpay.js";
+import { emitToUser } from "../socket.js";
 
 
 // ============================================================
@@ -41,10 +47,12 @@ const ALLOWED_TRANSITIONS = {
 
   ON_THE_WAY: [
     "STARTED",
+    "CANCELLED",
   ],
 
   STARTED: [
     "COMPLETED",
+    "CANCELLED",
   ],
 
   COMPLETED: [],
@@ -266,6 +274,94 @@ const createStatusHistory = async ({
 };
 
 
+// ------------------------------------------------------------
+// Process Automatic Refund for Paid Bookings
+// ------------------------------------------------------------
+
+const processAutoRefundForBooking = async (booking, reason, cancelledByUser) => {
+  if (booking.paymentStatus !== "PAID") {
+    return { refunded: false, message: "Booking was not paid; no refund required." };
+  }
+
+  const payment = await Payment.findOne({
+    booking: booking._id,
+    status: "PAID",
+  });
+
+  if (!payment) {
+    return { refunded: false, message: "No successful payment found to refund." };
+  }
+
+  let razorpayRefundId = null;
+  let refundStatus = "COMPLETED";
+  let failureReason = "";
+
+  const razorpay = getRazorpay();
+  if (razorpay && payment.razorpayPaymentId) {
+    try {
+      const rzpRefund = await razorpay.payments.refund(payment.razorpayPaymentId, {
+        amount: Math.round(payment.amount * 100),
+        notes: {
+          bookingId: booking._id.toString(),
+          reason: reason || "Booking cancelled",
+        },
+      });
+      razorpayRefundId = rzpRefund?.id || null;
+    } catch (rzpErr) {
+      console.error("Razorpay auto-refund API error:", rzpErr?.error || rzpErr?.message || rzpErr);
+      refundStatus = "REQUESTED";
+      failureReason = rzpErr?.error?.description || rzpErr?.message || "Razorpay API refund pending";
+    }
+  }
+
+  // Create Refund record
+  const refund = await Refund.create({
+    payment: payment._id,
+    booking: booking._id,
+    requestedBy: cancelledByUser,
+    amount: payment.amount,
+    reason: reason || "Booking cancelled",
+    razorpayRefundId: razorpayRefundId || undefined,
+    status: refundStatus,
+    processedAt: refundStatus === "COMPLETED" ? new Date() : undefined,
+    failureReason: failureReason || undefined,
+  });
+
+  // Update payment status
+  payment.status = "REFUNDED";
+  await payment.save();
+
+  // Update booking paymentStatus
+  booking.paymentStatus = "REFUNDED";
+  await booking.save();
+
+  // Create transaction record
+  try {
+    await Transaction.create({
+      user: booking.user,
+      provider: booking.provider,
+      booking: booking._id,
+      payment: payment._id,
+      refund: refund._id,
+      type: "REFUND",
+      amount: payment.amount,
+      status: refundStatus === "COMPLETED" ? "COMPLETED" : "PENDING",
+      referenceId: razorpayRefundId || `ref_${refund._id}`,
+      description: `Refund for cancelled booking #${booking.bookingNumber}`,
+    });
+  } catch (txErr) {
+    console.error("Transaction record creation error:", txErr);
+  }
+
+  return {
+    refunded: true,
+    refundId: refund._id,
+    amount: payment.amount,
+    razorpayRefundId,
+  };
+};
+
+
 // ============================================================
 // CUSTOMER
 // ============================================================
@@ -316,8 +412,13 @@ const createBooking = asyncHandler(
     );
 
 
-    // Prevent booking in the past
-    if (bookingDate < new Date()) {
+    // Prevent booking in the past (compare day only)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const bookingDay = new Date(bookingDate);
+    bookingDay.setHours(0, 0, 0, 0);
+
+    if (bookingDay < today) {
       throw new ApiError(
         400,
         "Scheduled date cannot be in the past"
@@ -389,31 +490,26 @@ const createBooking = asyncHandler(
     // Check booking conflict
     // --------------------------------------------------------
     //
-    // Same provider + same date + overlapping time
-    //
-    // Existing:
-    //       |---------|
-    //
-    // New:
-    //             |---------|
-    //
-    // overlap condition:
-    // existing.start < new.end
-    // AND
-    // existing.end > new.start
+    // Same provider + same calendar date + overlapping time
+    // Only accepted/active bookings reserve time slots
     // --------------------------------------------------------
+
+    const startOfDay = new Date(bookingDate);
+    startOfDay.setUTCHours(0, 0, 0, 0);
+    const endOfDay = new Date(bookingDate);
+    endOfDay.setUTCHours(23, 59, 59, 999);
 
     const conflictingBooking =
       await Booking.findOne({
         provider: provider._id,
 
         scheduledDate: {
-          $eq: bookingDate,
+          $gte: startOfDay,
+          $lte: endOfDay,
         },
 
         bookingStatus: {
           $in: [
-            BOOKING_STATUSES.PENDING,
             BOOKING_STATUSES.ACCEPTED,
             BOOKING_STATUSES.ON_THE_WAY,
             BOOKING_STATUSES.STARTED,
@@ -433,7 +529,7 @@ const createBooking = asyncHandler(
     if (conflictingBooking) {
       throw new ApiError(
         409,
-        "Provider is already booked for this time slot"
+        `Time slot (${scheduledStartTime} - ${scheduledEndTime}) is already reserved by another confirmed appointment.`
       );
     }
 
@@ -548,6 +644,38 @@ const createBooking = asyncHandler(
           "label addressLine city state pincode coordinates landmark"
         );
 
+    try {
+      if (provider.user) {
+        await Notification.create({
+          recipient: provider.user,
+          type: "BOOKING_CREATED",
+          title: "New Service Request",
+          message: `New booking request #${booking.bookingNumber} received for ${service.title}.`,
+          data: {
+            bookingId: booking._id,
+            bookingNumber: booking.bookingNumber,
+          },
+        });
+
+        emitToUser(provider.user, "notification", {
+          type: "BOOKING_CREATED",
+          title: "New Service Request",
+          message: `New booking request #${booking.bookingNumber} received for ${service.title}.`,
+          data: {
+            bookingId: booking._id,
+            bookingNumber: booking.bookingNumber,
+          },
+        });
+
+        emitToUser(provider.user, "booking_update", {
+          bookingId: booking._id,
+          status: "PENDING",
+          type: "NEW_REQUEST",
+        });
+      }
+    } catch (notifErr) {
+      console.error("Failed to send booking created notification:", notifErr);
+    }
 
     return res.status(201).json(
       new ApiResponse(
@@ -816,6 +944,20 @@ const cancelBooking =
       await booking.save();
 
 
+      // ------------------------------------------------------
+      // Auto-Refund if Paid
+      // ------------------------------------------------------
+
+      let refundInfo = null;
+      if (booking.paymentStatus === "PAID") {
+        refundInfo = await processAutoRefundForBooking(
+          booking,
+          cancellationReason,
+          req.user._id
+        );
+      }
+
+
       await createStatusHistory({
         bookingId: booking._id,
         status:
@@ -823,15 +965,59 @@ const cancelBooking =
         changedBy:
           req.user._id,
         note:
-          cancellationReason,
+          `${cancellationReason}${
+            refundInfo?.refunded
+              ? ` (Refund of ₹${refundInfo.amount} initiated)`
+              : ""
+          }`,
       });
+
+      // Real-time notifications and socket emit
+      try {
+        emitToUser(req.user._id, "booking_update", {
+          bookingId: booking._id,
+          status: BOOKING_STATUSES.CANCELLED,
+          paymentStatus: booking.paymentStatus,
+          refund: refundInfo,
+        });
+
+        // Populate provider user if needed
+        const populated = await Booking.findById(booking._id).populate("provider", "user businessName");
+        if (populated?.provider?.user) {
+          emitToUser(populated.provider.user, "booking_update", {
+            bookingId: booking._id,
+            status: BOOKING_STATUSES.CANCELLED,
+            paymentStatus: booking.paymentStatus,
+          });
+
+          await Notification.create({
+            recipient: populated.provider.user,
+            type: "BOOKING_CANCELLED",
+            title: "Booking Cancelled by Customer",
+            message: `Booking #${booking.bookingNumber} was cancelled by the customer.`,
+            data: {
+              bookingId: booking._id,
+              bookingNumber: booking.bookingNumber,
+            },
+          });
+        }
+      } catch (notifErr) {
+        console.error("Failed to emit socket on customer cancel:", notifErr);
+      }
 
 
       return res.status(200).json(
         new ApiResponse(
           200,
-          booking,
-          "Booking cancelled successfully"
+          {
+            booking,
+            refund: refundInfo,
+          },
+          `Booking cancelled successfully.${
+            refundInfo?.refunded
+              ? ` Full refund of ₹${refundInfo.amount} initiated.`
+              : ""
+          }`
         )
       );
     }
@@ -1057,14 +1243,13 @@ const acceptBooking =
           req.user._id
         );
 
-
       const booking =
         await Booking.findOne({
           _id: bookingId,
-          provider:
-            provider._id,
-        });
-
+          provider: provider._id,
+        })
+          .populate("service", "title price duration")
+          .populate("user", "_id fullName email phone");
 
       if (!booking) {
         throw new ApiError(
@@ -1073,40 +1258,90 @@ const acceptBooking =
         );
       }
 
+      if (booking.bookingStatus !== BOOKING_STATUSES.PENDING) {
+        throw new ApiError(
+          400,
+          `Only pending bookings can be accepted. Current status: ${booking.bookingStatus}`
+        );
+      }
 
-      validateStatusTransition(
-        booking.bookingStatus,
-        BOOKING_STATUSES.ACCEPTED
-      );
-
-
-      booking.bookingStatus =
-        BOOKING_STATUSES.ACCEPTED;
-
-
-      await booking.save();
-
-
-      await createStatusHistory({
-        bookingId:
-          booking._id,
-
-        status:
-          BOOKING_STATUSES.ACCEPTED,
-
-        changedBy:
-          req.user._id,
-
-        note:
-          "Booking accepted by provider",
+      // --------------------------------------------------------
+      // Double Booking Slot Protection
+      // Check if provider already has an accepted/active booking for this exact date & overlapping time
+      // --------------------------------------------------------
+      const conflictingBooking = await Booking.findOne({
+        _id: { $ne: booking._id },
+        provider: provider._id,
+        scheduledDate: booking.scheduledDate,
+        bookingStatus: {
+          $in: [
+            BOOKING_STATUSES.ACCEPTED,
+            BOOKING_STATUSES.ON_THE_WAY,
+            BOOKING_STATUSES.STARTED,
+          ],
+        },
+        scheduledStartTime: {
+          $lt: booking.scheduledEndTime,
+        },
+        scheduledEndTime: {
+          $gt: booking.scheduledStartTime,
+        },
       });
 
+      if (conflictingBooking) {
+        throw new ApiError(
+          409,
+          `Time slot (${booking.scheduledStartTime} - ${booking.scheduledEndTime}) is already reserved by another accepted booking (#${conflictingBooking.bookingNumber}).`
+        );
+      }
+
+      booking.bookingStatus = BOOKING_STATUSES.ACCEPTED;
+      await booking.save();
+
+      await createStatusHistory({
+        bookingId: booking._id,
+        status: BOOKING_STATUSES.ACCEPTED,
+        changedBy: req.user._id,
+        note: "Booking accepted by provider. Awaiting customer payment.",
+      });
+
+      // Notify customer
+      try {
+        const customerId = booking.user?._id || booking.user;
+        await Notification.create({
+          recipient: customerId,
+          type: "BOOKING_ACCEPTED",
+          title: "Booking Request Accepted!",
+          message: `Your booking #${booking.bookingNumber} for ${booking.service?.title || "service"} has been accepted by ${provider.businessName}. Please complete your payment to confirm your appointment.`,
+          data: {
+            bookingId: booking._id,
+            bookingNumber: booking.bookingNumber,
+          },
+        });
+
+        emitToUser(customerId, "notification", {
+          type: "BOOKING_ACCEPTED",
+          title: "Booking Request Accepted!",
+          message: `Your booking #${booking.bookingNumber} was accepted by ${provider.businessName}. Please pay now to confirm.`,
+          data: {
+            bookingId: booking._id,
+            bookingNumber: booking.bookingNumber,
+          },
+        });
+
+        emitToUser(customerId, "booking_update", {
+          bookingId: booking._id,
+          status: BOOKING_STATUSES.ACCEPTED,
+        });
+      } catch (notifErr) {
+        console.error("Failed to notify user on accept:", notifErr);
+      }
 
       return res.status(200).json(
         new ApiResponse(
           200,
           booking,
-          "Booking accepted successfully"
+          "Booking accepted successfully. Customer notified for payment."
         )
       );
     }
@@ -1128,26 +1363,23 @@ const rejectBooking =
         reason,
       } = req.body;
 
-
       validateObjectId(
         bookingId,
         "booking ID"
       );
-
 
       const provider =
         await getMyProvider(
           req.user._id
         );
 
-
       const booking =
         await Booking.findOne({
           _id: bookingId,
-          provider:
-            provider._id,
-        });
-
+          provider: provider._id,
+        })
+          .populate("service", "title price")
+          .populate("user", "_id fullName email phone");
 
       if (!booking) {
         throw new ApiError(
@@ -1156,53 +1388,70 @@ const rejectBooking =
         );
       }
 
-
-      validateStatusTransition(
-        booking.bookingStatus,
-        BOOKING_STATUSES.REJECTED
-      );
-
+      if (booking.bookingStatus !== BOOKING_STATUSES.PENDING) {
+        throw new ApiError(
+          400,
+          `Only pending bookings can be declined. Current status: ${booking.bookingStatus}`
+        );
+      }
 
       const rejectionReason =
-        reason?.trim() ||
-        "Rejected by provider";
+        reason?.trim() || "Declined by service provider";
 
-
-      if (
-        rejectionReason.length >
-        500
-      ) {
+      if (rejectionReason.length > 500) {
         throw new ApiError(
           400,
           "Rejection reason cannot exceed 500 characters"
         );
       }
 
-
-      booking.bookingStatus =
-        BOOKING_STATUSES.REJECTED;
-
-
-      booking.cancellation = undefined;
-
+      booking.bookingStatus = BOOKING_STATUSES.REJECTED;
+      booking.cancellation = {
+        cancelledBy: req.user._id,
+        reason: rejectionReason,
+        cancelledAt: new Date(),
+      };
 
       await booking.save();
 
-
       await createStatusHistory({
-        bookingId:
-          booking._id,
-
-        status:
-          BOOKING_STATUSES.REJECTED,
-
-        changedBy:
-          req.user._id,
-
-        note:
-          rejectionReason,
+        bookingId: booking._id,
+        status: BOOKING_STATUSES.REJECTED,
+        changedBy: req.user._id,
+        note: `Booking rejected by provider: ${rejectionReason}`,
       });
 
+      // Notify customer
+      try {
+        const customerId = booking.user?._id || booking.user;
+        await Notification.create({
+          recipient: customerId,
+          type: "BOOKING_REJECTED",
+          title: "Booking Request Declined",
+          message: `Your booking #${booking.bookingNumber} was declined by ${provider.businessName}. Reason: ${rejectionReason}`,
+          data: {
+            bookingId: booking._id,
+            bookingNumber: booking.bookingNumber,
+          },
+        });
+
+        emitToUser(customerId, "notification", {
+          type: "BOOKING_REJECTED",
+          title: "Booking Request Declined",
+          message: `Your booking #${booking.bookingNumber} was declined by ${provider.businessName}.`,
+          data: {
+            bookingId: booking._id,
+            bookingNumber: booking.bookingNumber,
+          },
+        });
+
+        emitToUser(customerId, "booking_update", {
+          bookingId: booking._id,
+          status: BOOKING_STATUSES.REJECTED,
+        });
+      } catch (notifErr) {
+        console.error("Failed to notify user on reject:", notifErr);
+      }
 
       return res.status(200).json(
         new ApiResponse(
@@ -1213,6 +1462,144 @@ const rejectBooking =
       );
     }
   );
+
+
+// ============================================================
+// 8B. PROVIDER CANCEL BOOKING (ANYTIME BEFORE COMPLETION WITH AUTO-REFUND)
+// ============================================================
+
+const providerCancelBooking = asyncHandler(async (req, res) => {
+  const { bookingId } = req.params;
+  const { reason } = req.body;
+
+  validateObjectId(bookingId, "booking ID");
+
+  const provider = await getMyProvider(req.user._id);
+
+  const booking = await Booking.findOne({
+    _id: bookingId,
+    provider: provider._id,
+  })
+    .populate("service", "title price")
+    .populate("user", "_id fullName email phone");
+
+  if (!booking) {
+    throw new ApiError(404, "Booking not found");
+  }
+
+  if (
+    booking.bookingStatus === BOOKING_STATUSES.COMPLETED ||
+    booking.bookingStatus === BOOKING_STATUSES.CANCELLED ||
+    booking.bookingStatus === BOOKING_STATUSES.REJECTED
+  ) {
+    throw new ApiError(
+      400,
+      `Cannot cancel booking with current status: ${booking.bookingStatus}`
+    );
+  }
+
+  const cancellationReason =
+    reason?.trim() || "Service appointment cancelled by provider";
+
+  if (cancellationReason.length > 500) {
+    throw new ApiError(400, "Cancellation reason cannot exceed 500 characters");
+  }
+
+  // Update status
+  booking.bookingStatus = BOOKING_STATUSES.CANCELLED;
+  booking.cancellation = {
+    cancelledBy: req.user._id,
+    cancelledAt: new Date(),
+    reason: cancellationReason,
+  };
+  await booking.save();
+
+  // Automatic refund if user has paid
+  let refundInfo = null;
+  if (booking.paymentStatus === "PAID") {
+    refundInfo = await processAutoRefundForBooking(
+      booking,
+      cancellationReason,
+      req.user._id
+    );
+  }
+
+  await createStatusHistory({
+    bookingId: booking._id,
+    status: BOOKING_STATUSES.CANCELLED,
+    changedBy: req.user._id,
+    note: `Provider cancelled: ${cancellationReason}${
+      refundInfo?.refunded
+        ? ` (Automatic refund of ₹${refundInfo.amount} initiated)`
+        : ""
+    }`,
+  });
+
+  // Real-time notifications and socket events
+  try {
+    const customerId = booking.user?._id || booking.user;
+    const notifMsg = `Your booking #${booking.bookingNumber} was cancelled by ${
+      provider.businessName
+    }.${
+      refundInfo?.refunded
+        ? ` A full refund of ₹${refundInfo.amount} has been initiated.`
+        : " No payment was deducted."
+    }`;
+
+    await Notification.create({
+      recipient: customerId,
+      type: "BOOKING_CANCELLED",
+      title: "Booking Cancelled by Provider",
+      message: notifMsg,
+      data: {
+        bookingId: booking._id,
+        bookingNumber: booking.bookingNumber,
+        refundInitiated: Boolean(refundInfo?.refunded),
+      },
+    });
+
+    emitToUser(customerId, "notification", {
+      type: "BOOKING_CANCELLED",
+      title: "Booking Cancelled by Provider",
+      message: notifMsg,
+      data: {
+        bookingId: booking._id,
+        bookingNumber: booking.bookingNumber,
+      },
+    });
+
+    emitToUser(customerId, "booking_update", {
+      bookingId: booking._id,
+      status: BOOKING_STATUSES.CANCELLED,
+      paymentStatus: booking.paymentStatus,
+      refund: refundInfo,
+    });
+
+    emitToUser(provider.user, "booking_update", {
+      bookingId: booking._id,
+      status: BOOKING_STATUSES.CANCELLED,
+      paymentStatus: booking.paymentStatus,
+      refund: refundInfo,
+    });
+  } catch (notifErr) {
+    console.error("Failed to notify user on provider cancel:", notifErr);
+  }
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        booking,
+        refund: refundInfo,
+      },
+      `Booking cancelled successfully.${
+        refundInfo?.refunded
+          ? ` Full refund of ₹${refundInfo.amount} has been processed.`
+          : ""
+      }`
+    )
+  );
+});
 
 
 // ============================================================
@@ -1601,6 +1988,7 @@ export {
   getProviderBookingById,
   acceptBooking,
   rejectBooking,
+  providerCancelBooking,
 
   markOnTheWay,
   startService,
