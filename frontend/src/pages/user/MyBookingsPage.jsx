@@ -32,8 +32,12 @@ export default function MyBookingsPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await apiClient.get(ENDPOINTS.BOOKINGS.MY_BOOKINGS);
-      const list = res.data?.data || res.data || [];
+      const res = await apiClient.get(ENDPOINTS.BOOKINGS.MY_BOOKINGS, {
+        params: { limit: 50 }, // get up to 50 bookings
+      });
+      // API returns: { data: { bookings: [...], pagination: {...} } }
+      const raw = res.data?.data;
+      const list = raw?.bookings ?? raw ?? [];
       setBookings(Array.isArray(list) ? list : []);
     } catch (err) {
       setError(err.response?.data?.message || "Failed to load bookings.");

@@ -38,12 +38,8 @@ const paymentSchema = new Schema(
 
     razorpayPaymentId: {
       type: String,
-      default: null,
-      unique: true,
-      sparse: true,
       trim: true,
       maxlength: [100, "Razorpay payment ID is too long"],
-      index: true,
     },
 
     razorpaySignature: {
@@ -129,5 +125,13 @@ paymentSchema.index({
   provider: 1,
   createdAt: -1,
 });
+
+paymentSchema.index(
+  { razorpayPaymentId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { razorpayPaymentId: { $type: "string" } },
+  }
+);
 
 export const Payment = mongoose.model("Payment", paymentSchema);

@@ -342,7 +342,6 @@ const processAutoRefundForBooking = async (booking, reason, cancelledByUser) => 
       provider: booking.provider,
       booking: booking._id,
       payment: payment._id,
-      refund: refund._id,
       type: "REFUND",
       amount: payment.amount,
       status: refundStatus === "COMPLETED" ? "COMPLETED" : "PENDING",

@@ -174,10 +174,12 @@ const createPaymentOrder = asyncHandler(async (req, res) => {
                 amount,
                 currency: "INR",
                 status: "PENDING",
-                razorpayPaymentId: null,
-                razorpaySignature: null,
                 paidAt: null,
                 failureReason: "",
+            },
+            $unset: {
+                razorpayPaymentId: 1,
+                razorpaySignature: 1,
             },
         },
         { new: true, upsert: true, setDefaultsOnInsert: true }

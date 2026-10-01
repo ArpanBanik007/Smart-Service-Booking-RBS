@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+﻿import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import api from "../../api/axios.js";
 import { ENDPOINTS } from "../../api/endpoints.js";
@@ -17,6 +17,7 @@ import {
   FiCheckCircle,
   FiAlertCircle,
   FiCreditCard,
+  FiAlertTriangle,
 } from "react-icons/fi";
 
 export default function ProviderBookingDetailsPage() {
@@ -27,6 +28,8 @@ export default function ProviderBookingDetailsPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
 
   const fetchBooking = async () => {
     setLoading(true);
@@ -75,6 +78,30 @@ export default function ProviderBookingDetailsPage() {
     );
   };
 
+  const handleCancelBooking = async () => {
+    if (!cancelReason.trim()) return;
+    setActionLoading(true);
+    setErrorMsg("");
+    setSuccessMsg("");
+    try {
+      const res = await api.patch(ENDPOINTS.BOOKINGS.PROVIDER_CANCEL(id), {
+        reason: cancelReason.trim(),
+      });
+      const refundInfo = res.data?.data?.refund;
+      const refundMsg = refundInfo?.refunded
+        ? ` Full refund of ₹${refundInfo.amount} has been initiated to the customer.`
+        : "";
+      setSuccessMsg(`Booking cancelled successfully.${refundMsg}`);
+      setShowCancelConfirm(false);
+      setCancelReason("");
+      fetchBooking();
+    } catch (err) {
+      setErrorMsg(err.response?.data?.message || "Failed to cancel booking.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const handleMarkOnTheWay = () =>
     handleTransition(
       () => api.patch(ENDPOINTS.BOOKINGS.ON_THE_WAY(id)),
@@ -98,6 +125,10 @@ export default function ProviderBookingDetailsPage() {
     Array.isArray(addressCoords) && addressCoords.length === 2
       ? { latitude: addressCoords[1], longitude: addressCoords[0] }
       : null;
+
+  const canCancel =
+    booking &&
+    !["COMPLETED", "CANCELLED", "REJECTED"].includes(booking.bookingStatus);
 
   return (
     <ProviderPageShell
@@ -200,7 +231,7 @@ export default function ProviderBookingDetailsPage() {
                 </button>
               )}
 
-              {booking.bookingStatus === "IN_PROGRESS" && (
+              {(booking.bookingStatus === "IN_PROGRESS" || booking.bookingStatus === "STARTED") && (
                 <button
                   type="button"
                   disabled={actionLoading}
@@ -216,8 +247,62 @@ export default function ProviderBookingDetailsPage() {
                   Job Completed & Fulfilled
                 </span>
               )}
+
+              {/* Cancel Order — shown until the job is done or already cancelled */}
+              {canCancel && (
+                <button
+                  type="button"
+                  disabled={actionLoading}
+                  onClick={() => setShowCancelConfirm(true)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50"
+                >
+                  <FiAlertTriangle className="shrink-0" /> Cancel Order
+                </button>
+              )}
             </div>
           </div>
+
+          {/* Cancel Confirmation Dialog */}
+          {showCancelConfirm && (
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-rose-800">
+                <FiAlertTriangle /> Cancel This Booking?
+              </h3>
+              {booking.paymentStatus === "PAID" && (
+                <p className="mt-2 text-xs text-rose-700 font-medium">
+                  The customer has already paid. An automatic refund will be issued to their original payment method.
+                </p>
+              )}
+              <p className="mt-2 text-xs text-slate-600">
+                This action cannot be undone. Please provide a reason for the cancellation.
+              </p>
+              <textarea
+                rows={3}
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="Reason for cancelling (e.g. not available that day, parts unavailable...)"
+                className="mt-3 w-full rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-rose-400 focus:outline-none"
+              />
+              <div className="mt-3 flex items-center gap-3">
+                <button
+                  type="button"
+                  disabled={actionLoading || !cancelReason.trim()}
+                  onClick={handleCancelBooking}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 px-5 py-2.5 text-xs font-semibold text-white transition hover:bg-rose-700 disabled:opacity-50"
+                >
+                  {actionLoading ? "Cancelling..." : "Confirm Cancellation"}
+                </button>
+                <button
+                  type="button"
+                  disabled={actionLoading}
+                  onClick={() => { setShowCancelConfirm(false); setCancelReason(""); }}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
+                >
+                  Go Back
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Customer & Destination Details */}
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
