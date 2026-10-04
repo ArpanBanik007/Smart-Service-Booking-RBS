@@ -34,7 +34,24 @@ const allowedOrigins = [
   "http://127.0.0.1:5174",
   "http://localhost:3000",
   "http://127.0.0.1:3000",
+  "https://nearit.vercel.app",
 ];
+
+if (process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== "*") {
+  process.env.CORS_ORIGIN.split(",").forEach((origin) => {
+    const trimmed = origin.trim().replace(/\/$/, "");
+    if (trimmed && !allowedOrigins.includes(trimmed)) {
+      allowedOrigins.push(trimmed);
+    }
+  });
+}
+
+if (process.env.FRONTEND_URL) {
+  const trimmed = process.env.FRONTEND_URL.trim().replace(/\/$/, "");
+  if (trimmed && !allowedOrigins.includes(trimmed)) {
+    allowedOrigins.push(trimmed);
+  }
+}
 
 app.use(
   cors({
@@ -43,12 +60,16 @@ app.use(
         return callback(null, true);
       }
 
-      if (allowedOrigins.includes(origin)) {
+      const normalizedOrigin = origin.replace(/\/$/, "");
+      if (
+        allowedOrigins.includes(origin) ||
+        allowedOrigins.includes(normalizedOrigin)
+      ) {
         return callback(null, true);
       }
 
       return callback(
-        new Error("Not allowed by CORS")
+        new Error(`Not allowed by CORS: ${origin}`)
       );
     },
     credentials: true,
