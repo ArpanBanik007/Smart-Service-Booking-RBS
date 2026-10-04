@@ -1,4 +1,5 @@
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
+import { useSelector } from "react-redux";
 
 // Public pages
 import HomePage from "../pages/home/HomePage.jsx";
@@ -55,6 +56,20 @@ import {
   AdminReviewsPage,
 } from "../pages/admin/index.jsx";
 
+function DashboardRedirect() {
+  const { user, isAuthenticated } = useSelector((state) => state.auth);
+  if (!isAuthenticated || !user) {
+    return <Navigate to="/login" replace />;
+  }
+  if (user.role === "admin") {
+    return <Navigate to="/admin/dashboard" replace />;
+  }
+  if (user.role === "provider") {
+    return <Navigate to="/provider/dashboard" replace />;
+  }
+  return <Navigate to="/bookings" replace />;
+}
+
 export default function AppRoutes() {
   return (
     <Routes>
@@ -62,6 +77,7 @@ export default function AppRoutes() {
           PUBLIC ROUTES
       ======================================================== */}
       <Route path="/" element={<HomePage />} />
+      <Route path="/dashboard" element={<DashboardRedirect />} />
       <Route path="/providers" element={<ProvidersExplorePage />} />
       <Route path="/page" element={<ProvidersExplorePage />} />
       <Route path="/search" element={<ProvidersExplorePage />} />
