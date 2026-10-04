@@ -1,16 +1,24 @@
 import apiClient from "./axios.js";
 import { ENDPOINTS } from "./endpoints.js";
+import { saveTokens, clearTokens } from "./tokenStore.js";
+
+// ─── Auth API ──────────────────────────────────────────────────────────────────
 
 export const authApi = {
   // Login with identifier (email or username) + password
   login: async (credentials) => {
     const res = await apiClient.post(ENDPOINTS.AUTH.LOGIN, credentials);
+    // Store tokens from response body as fallback for cross-origin cookie issues
+    const { accessToken, refreshToken } = res.data?.data || {};
+    saveTokens(accessToken, refreshToken);
     return res.data;
   },
 
   // Register user with fullName, email, phone, username, password, otp
   register: async (userData) => {
     const res = await apiClient.post(ENDPOINTS.AUTH.REGISTER, userData);
+    const { accessToken, refreshToken } = res.data?.data || {};
+    saveTokens(accessToken, refreshToken);
     return res.data;
   },
 
@@ -26,7 +34,7 @@ export const authApi = {
     return res.data;
   },
 
-  // Get current logged in user from cookie
+  // Get current logged in user from cookie / localStorage token
   getCurrentUser: async () => {
     const res = await apiClient.get(ENDPOINTS.AUTH.CURRENT_USER);
     return res.data;
@@ -35,18 +43,25 @@ export const authApi = {
   // Refresh access token
   refreshToken: async () => {
     const res = await apiClient.post(ENDPOINTS.AUTH.REFRESH_TOKEN);
+    const { accessToken, refreshToken } = res.data?.data || {};
+    saveTokens(accessToken, refreshToken);
     return res.data;
   },
 
-  // Logout user and clear cookies
+  // Logout user and clear cookies + localStorage
   logout: async () => {
-    const res = await apiClient.post(ENDPOINTS.AUTH.LOGOUT);
-    return res.data;
+    try {
+      const res = await apiClient.post(ENDPOINTS.AUTH.LOGOUT);
+      return res.data;
+    } finally {
+      clearTokens();
+    }
   },
 
   // Change password
   changePassword: async (passwords) => {
     const res = await apiClient.post(ENDPOINTS.AUTH.CHANGE_PASSWORD, passwords);
+    clearTokens();
     return res.data;
   },
 

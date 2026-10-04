@@ -1,4 +1,5 @@
 import axios from "axios";
+import { getStoredAccessToken, getStoredRefreshToken, saveTokens, clearTokens } from "./tokenStore.js";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
@@ -10,6 +11,15 @@ const apiClient = axios.create({
   headers: {
     "Content-Type": "application/json",
   },
+});
+
+// Request interceptor: inject Authorization header from localStorage (cross-origin fallback)
+apiClient.interceptors.request.use((config) => {
+  const token = getStoredAccessToken();
+  if (token) {
+    config.headers["Authorization"] = `Bearer ${token}`;
+  }
+  return config;
 });
 
 // Flag and queue to avoid parallel multiple refresh requests
@@ -49,7 +59,10 @@ apiClient.interceptors.response.use(
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject });
         })
-          .then(() => apiClient(originalRequest))
+          .then((token) => {
+            if (token) originalRequest.headers["Authorization"] = `Bearer ${token}`;
+            return apiClient(originalRequest);
+          })
           .catch((err) => Promise.reject(err));
       }
 
@@ -57,10 +70,30 @@ apiClient.interceptors.response.use(
       isRefreshing = true;
 
       try {
-        await apiClient.post("/users/refresh-token");
-        processQueue(null);
+        // Try to refresh using stored refresh token via Authorization header
+        const storedRefreshToken = getStoredRefreshToken();
+        const refreshRes = await axios.post(
+          `${API_BASE_URL}/users/refresh-token`,
+          {},
+          {
+            withCredentials: true,
+            headers: storedRefreshToken
+              ? { Authorization: `Bearer ${storedRefreshToken}` }
+              : {},
+          }
+        );
+
+        const newAccessToken = refreshRes.data?.data?.accessToken;
+        const newRefreshToken = refreshRes.data?.data?.refreshToken;
+        saveTokens(newAccessToken, newRefreshToken);
+
+        if (newAccessToken) {
+          originalRequest.headers["Authorization"] = `Bearer ${newAccessToken}`;
+        }
+        processQueue(null, newAccessToken);
         return apiClient(originalRequest);
       } catch (refreshError) {
+        clearTokens();
         processQueue(refreshError, null);
         return Promise.reject(refreshError);
       } finally {

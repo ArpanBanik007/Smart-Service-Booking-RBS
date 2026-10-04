@@ -26,20 +26,22 @@ const REFRESH_COOKIE_NAME = "refreshToken";
 
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-const getCookieOptions = () => ({
-  httpOnly: true,
+const getCookieOptions = () => {
+  const isProduction =
+    process.env.NODE_ENV === "production" ||
+    process.env.RENDER === "true" ||
+    Boolean(process.env.RENDER_SERVICE_ID) ||
+    Boolean(process.env.RENDER_EXTERNAL_URL) ||
+    (process.env.CORS_ORIGIN && !process.env.CORS_ORIGIN.includes("localhost"));
 
-  secure: process.env.NODE_ENV === "production",
-
-  sameSite:
-    process.env.NODE_ENV === "production"
-      ? "None"
-      : "Lax",
-
-  path: "/",
-
-  maxAge: COOKIE_MAX_AGE,
-});
+  return {
+    httpOnly: true,
+    secure: Boolean(isProduction),
+    sameSite: isProduction ? "None" : "Lax",
+    path: "/",
+    maxAge: COOKIE_MAX_AGE,
+  };
+};
 
 
 // ============================================================
@@ -397,6 +399,8 @@ const registerUser = asyncHandler(async (req, res) => {
         201,
         {
           user: createdUser.toSafeObject(),
+          accessToken,
+          refreshToken,
         },
         "User registered successfully"
       )
@@ -735,6 +739,8 @@ const loginUser = asyncHandler(async (req, res) => {
         200,
         {
           user: loggedInUser.toSafeObject(),
+          accessToken,
+          refreshToken,
         },
         "User logged in successfully"
       )
@@ -787,8 +793,10 @@ const logoutUser = asyncHandler(async (req, res) => {
 
 const refreshAccessToken = asyncHandler(
   async (req, res) => {
+    // Accept refresh token from cookie OR Authorization header (cross-origin fallback)
     const incomingRefreshToken =
-      req.cookies?.refreshToken;
+      req.cookies?.refreshToken ||
+      req.header("Authorization")?.replace("Bearer ", "");
 
     if (!incomingRefreshToken) {
       throw new ApiError(
@@ -879,6 +887,8 @@ const refreshAccessToken = asyncHandler(
             200,
             {
               user: safeUser.toSafeObject(),
+              accessToken,
+              refreshToken: newRefreshToken,
             },
             "Access token refreshed successfully"
           )
